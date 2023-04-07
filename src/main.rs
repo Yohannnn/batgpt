@@ -8,11 +8,13 @@ use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, error::Error, sync::Arc};
 
+const NAME: &str = "batgpt";
+
 // Config for the cli
 #[derive(Serialize, Deserialize)]
 struct MyConfig {
     openai_key: String,
-    students: Vec<Student>,
+    students: HashMap<String, String>,
 }
 
 /// `MyConfig` implements `Default`
@@ -23,13 +25,6 @@ impl ::std::default::Default for MyConfig {
             students: Default::default(),
         }
     }
-}
-
-// Struct to store cuname and pass for each student
-#[derive(Serialize, Deserialize)]
-struct Student {
-    cuname: String,
-    pass: String,
 }
 
 // Send an openai api request to get the solution code
@@ -120,17 +115,11 @@ async fn login(client: &reqwest::Client, uname: &str, pass: &str) -> Result<(), 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Setup the cli
-    let matches = Command::new("batgpt")
-        .version("0.0.1")
+    let matches = Command::new(NAME)
+        .version("0.1.1")
         .author("Yohan")
         .about("Solves codingbat problems using openai gpt-3")
         .subcommand_required(true)
-        .arg(
-            Arg::new("verbose")
-                .short('v')
-                .long("verbose")
-                .help("Enable verbose output"),
-        )
         .subcommand(
             Command::new("add")
                 .about("Add a student")
@@ -176,52 +165,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .get_matches();
 
     // Load the config
-    let config: MyConfig = confy::load("batgpt", None)?;
+    let mut config: MyConfig = confy::load(NAME, None)?;
 
     match matches.subcommand() {
         Some(("add", add_matches)) => {
-            let mut students = config.students;
-            students.push(Student {
-                cuname: (add_matches.get_one::<String>("cuname").unwrap()).clone(),
-                pass: (add_matches.get_one::<String>("pass").unwrap()).clone(),
-            });
-
-            confy::store(
-                "batgpt",
-                None,
-                &MyConfig {
-                    openai_key: config.openai_key,
-                    students,
-                },
-            )?;
+            config.students.insert((add_matches.get_one::<String>("cuname").unwrap()).clone(), add_matches.get_one::<String>("pass").unwrap().clone());
+            confy::store(NAME, None, config)?;
         }
         Some(("remove", remove_matches)) => {
-            let cuname = (remove_matches.get_one::<String>("cuname").unwrap()).clone();
-            let mut students = config.students;
-            students.retain(|student| student.cuname != cuname);
-            confy::store(
-                "batgpt",
-                None,
-                &MyConfig {
-                    openai_key: config.openai_key,
-                    students,
-                },
-            )?;
+            config.students.remove(remove_matches.get_one::<String>("cuname").unwrap());
+            confy::store(NAME, None, config)?;
         }
         Some(("list", _)) => {
-            for student in config.students {
-                println!("{}: {}", student.cuname, student.pass);
+            for (cuname, _) in config.students {
+                println!("{}", cuname);
             }
         }
         Some(("setkey", setkey_matches)) => {
-            confy::store(
-                "batgpt",
-                None,
-                &MyConfig {
-                    openai_key: (setkey_matches.get_one::<String>("key").unwrap()).clone(),
-                    students: config.students,
-                },
-            )?;
+            config.openai_key = setkey_matches.get_one::<String>("key").unwrap().to_string();
+            confy::store(NAME, None, config)?;
         }
         Some(("solve", solve_matches)) => {
             let mut handles = vec![];
@@ -243,7 +205,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let shared_solutions = Arc::new(solutions);
 
             // Run the solution for each student
-            for student in config.students {
+            for (cuname, pass) in config.students {
                 // Create the client
                 let client = ClientBuilder::new()
                     .cookie_store(true)
@@ -251,13 +213,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .expect("Failed to create client");
 
                 // Login
-                login(&client, &student.cuname, &student.pass).await?;
+                login(&client, &cuname, &pass).await?;
 
                 // Run the solutions asyncronously
                 let solutions = shared_solutions.as_ref().clone();
                 for (prob, solution) in solutions {
                     let client = client.clone();
-                    let cuname = student.cuname.clone();
+                    let cuname = cuname.clone();
                     handles.push(tokio::spawn(async move {
                         run_code(&client, prob.as_str(), solution.as_str(), &cuname).await;
                     }));
